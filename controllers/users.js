@@ -6,6 +6,9 @@ require("dotenv").config();
 const gravatar = require("gravatar");
 const Jimp = require("jimp");
 const fs = require("fs/promises");
+const { v4: uuidv4 } = require("uuid");
+const sgMail = require("@sendgrid/mail");
+
 const {
   findOne,
   findOneAndUpdate,
@@ -13,8 +16,7 @@ const {
 } = require("../models/functionsUsers");
 const User = require("../models/users");
 
-const { SECRET_KEY, PORT } = process.env;
-
+const { SECRET_KEY, PORT, SENDGRID_API_KEY } = process.env;
 
 const schema = Joi.object({
   email: Joi.string()
@@ -25,6 +27,65 @@ const schema = Joi.object({
     .required(),
   password: Joi.string().required(),
 });
+
+const schemaVerify = Joi.object({
+    email: Joi.string()
+      .email({
+        minDomainSegments: 2,
+        tlds: { allow: ["com", "net"] },
+      })
+      .required(),
+  });
+
+const ctrlEmailVerification = async (req, res) => {
+  const { verificationToken } = req.params;
+  const result = User.findOneAndUpdate(
+    { verificationToken },
+    { verificationToken: null, verify: true }
+  );
+  if (result === null) {
+    return res.status(404).send({ message: "User not found" });
+  }
+  res.send({ message: "Verification successful" });
+};
+
+const ctrlOneMoreVerification = async (req, res) => {
+    const { error } = schemaVerify.validate(req.body);
+  if (error) {
+    return res
+      .status(400)
+      .send({ message: "Missing required field email" });
+  }
+  const { email } = req.body;
+ 
+  const isEmail = await findOne(email);
+ 
+ if(!isEmail.verify) {
+    sgMail.setApiKey(SENDGRID_API_KEY);
+    const msg = {
+      to: email, // Change to your recipient
+      from: "oradio@ukr.net", // Change to your verified sender
+      subject: "Verify your registration",
+      text: "and easy to do anywhere, even with Node.js",
+      html: `<a href="http://localhost:${PORT}users/verify/newUser.verificationToken">Click here to verify your account</a>`,
+    };
+    sgMail
+      .send(msg)
+      .then(() => {
+        console.log("Email sent");
+      })
+      .catch((error) => {
+        console.error(error);
+      });
+
+      return res.send({
+        message: "Verification email sent"
+        }
+      );
+ }
+res.status(400).send({"message":"Verification has already been passed"})
+   
+}
 
 const uploadAndPatchAvatar = async (req, res) => {
   const { _id } = req.user;
@@ -41,7 +102,7 @@ const uploadAndPatchAvatar = async (req, res) => {
     });
   await fs.unlink(path);
   await User.findByIdAndUpdate(_id, { avatarURL: avatarUrlPath });
-  res.send({avatarURL: `http://localhost:${PORT}${avatarUrlPath}`});
+  res.send({ avatarURL: `http://localhost:${PORT}${avatarUrlPath}` });
 };
 
 const crtlRegisterUser = async (req, res) => {
@@ -63,7 +124,25 @@ const crtlRegisterUser = async (req, res) => {
     email,
     password: hashPassword,
     avatarURL: resultUrl,
+    verificationToken: uuidv4(),
   });
+
+  sgMail.setApiKey(SENDGRID_API_KEY);
+  const msg = {
+    to: email, // Change to your recipient
+    from: "oradio@ukr.net", // Change to your verified sender
+    subject: "Verify your registration",
+    text: "and easy to do anywhere, even with Node.js",
+    html: `<a href="http://localhost:${PORT}users/verify/newUser.verificationToken">Click here to verify your account</a>`,
+  };
+  sgMail
+    .send(msg)
+    .then(() => {
+      console.log("Email sent");
+    })
+    .catch((error) => {
+      console.error(error);
+    });
 
   res.status(201).send({
     user: {
@@ -84,7 +163,7 @@ const crtlLoginUser = async (req, res) => {
   const { password, email } = req.body;
 
   const validEmail = await findOne(email);
-  if (!validEmail) {
+  if (!validEmail || !validEmail.verify) {
     return res.status(400).send({ message: "Email or password is wrong" });
   }
 
@@ -124,4 +203,6 @@ module.exports = {
   ctrlLogoutUser,
   ctrlCurrentUser,
   uploadAndPatchAvatar,
+  ctrlEmailVerification,
+  ctrlOneMoreVerification,
 };
